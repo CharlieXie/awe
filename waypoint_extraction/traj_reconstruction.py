@@ -114,9 +114,9 @@ def pos_only_geometric_waypoint_trajectory(
             state_err.append(pos_err)
 
     # print the average and max error
-    print(
-        f"Average pos error: {np.mean(state_err):.6f} \t Max pos error: {np.max(state_err):.6f}"
-    )
+    # print(
+    #     f"Average pos error: {np.mean(state_err):.6f} \t Max pos error: {np.max(state_err):.6f}"
+    # )
 
     if return_list:
         return total_traj_err(state_err), state_err

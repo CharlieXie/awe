@@ -1,1 +1,2 @@
 from .extract_waypoints import dp_waypoint_selection, greedy_waypoint_selection
+from .extract_waypoints_fast import dp_waypoint_selection_fast, _extract_worker
