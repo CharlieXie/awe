@@ -22,7 +22,6 @@ import tensorflow_datasets as tfds
 import json
 
 # 用于收集每个 episode 的统计信息
-# EP_STATS = []  # [(ep_idx, original_steps, waypoint_steps), ...]
 WAYPOINT_MAP = []  # 保存每个 episode 的 waypoint 原始索引
 # ============================================================
 # 0. Mock mujoco_py / glfw (same as rlds_wp_traj.py)
@@ -54,33 +53,11 @@ try:
 except (ImportError, ModuleNotFoundError):
     sys.modules['glfw'] = _MockModule('glfw')
 
-awe_root = r"C:\Users\chuanlia\Documents\learning_space\ntu\projects\awe"
+awe_root = r".."
 sys.path.insert(0, awe_root)
 
-# from waypoint_extraction import dp_waypoint_selection
-# from waypoint_extraction.extract_waypoints_fast import (
-#     dp_waypoint_selection_fast,
-#     _extract_worker,
-# )
 from waypoint_extraction.extract_waypoints_fast import dp_waypoint_selection_fast
 
-# ============================================================
-# Helper: detect gripper state change indices
-# ============================================================
-# def detect_gripper_changes(actions, left_idx=6, right_idx=13, atol=1.0):
-#     """
-#     Detect gripper command changes from the ACTION signal (step function).
-#     Since action commands are discrete jumps (not smooth curves),
-#     this produces very few waypoints — typically 2 per open/close event.
-#     """
-#     change_indices = set()
-#     for idx in [left_idx, right_idx]:
-#         gripper_cmd = actions[:, idx]
-#         for i in range(len(gripper_cmd) - 1):
-#             if abs(gripper_cmd[i] - gripper_cmd[i + 1]) > atol:
-#                 change_indices.add(i)
-#                 change_indices.add(i + 1)
-#     return sorted(change_indices)
 
 def detect_gripper_changes(actions, left_idx=6, right_idx=13, atol=1.0):
     """
@@ -113,8 +90,8 @@ def detect_gripper_changes(actions, left_idx=6, right_idx=13, atol=1.0):
 # 1. Configuration
 # ============================================================
 ERR_THRESHOLD = 0.008     # joint position error threshold (rad)
-SRC_DATA_DIR = r"C:\Users\chuanlia\Documents\learning_space\ntu\projects\awe\example\rlds_data"
-DST_DATA_DIR = r"C:\Users\chuanlia\Documents\learning_space\ntu\projects\awe\example\rlds_data_waypoint"
+SRC_DATA_DIR = r"rlds_data"
+DST_DATA_DIR = r"rlds_data_waypoint"
 # 用于收集每个 episode 的统计信息
 EP_STATS = []  # [(ep_idx, original_steps, waypoint_steps), ...]
 
@@ -157,6 +134,9 @@ class WaypointFilteredRLDS(tfds.core.GeneratorBasedBuilder):
                         'image_camera_head':        tfds.features.Image(shape=(224, 224, 3), dtype=tf.uint8),
                         'image_camera_wrist_left':  tfds.features.Image(shape=(224, 224, 3), dtype=tf.uint8),
                         'image_camera_wrist_right': tfds.features.Image(shape=(224, 224, 3), dtype=tf.uint8),
+                        'image_camera_head':        tfds.features.Image(shape=(224, 224, 3), dtype=tf.uint8, encoding_format='jpeg'),
+                        'image_camera_wrist_left':  tfds.features.Image(shape=(224, 224, 3), dtype=tf.uint8, encoding_format='jpeg'),
+                        'image_camera_wrist_right': tfds.features.Image(shape=(224, 224, 3), dtype=tf.uint8, encoding_format='jpeg'),
                         # # --- Depth images ---
                         # 'depth_camera_head':        tfds.features.Image(shape=(224, 224, 1), dtype=tf.uint16),
                         # 'depth_camera_wrist_left':  tfds.features.Image(shape=(224, 224, 1), dtype=tf.uint16),
@@ -284,10 +264,7 @@ class WaypointFilteredRLDS(tfds.core.GeneratorBasedBuilder):
 # 3. Main: build and save the new dataset
 # ============================================================
 if __name__ == "__main__":
-    # The builder stores data at: DST_DATA_DIR / waypoint_filtered_rlds / 1.0.0 /
-    # os.environ['PYTHONPATH'] = awe_root + os.pathsep + os.environ.get('PYTHONPATH', '')
     output_path = os.path.join(DST_DATA_DIR, "waypoint_filtered_rlds", "1.0.0")
-    # from waypoint_extraction.extract_waypoints_fast import dp_waypoint_selection_fast
 
     # Clear existing output to allow regeneration
     if os.path.exists(output_path):
@@ -298,7 +275,6 @@ if __name__ == "__main__":
     print(f"Output directory: {DST_DATA_DIR}")
     builder = WaypointFilteredRLDS(data_dir=DST_DATA_DIR)
     builder.download_and_prepare()
-    # builder.download_and_prepare()
 
     # ============================================================
     # Save waypoint index mapping (for verification)
@@ -321,53 +297,53 @@ if __name__ == "__main__":
         json.dump(wp_index_data, f, indent=2, ensure_ascii=False)
     print(f"\nWaypoint indices saved to: {wp_index_path}")
     
-    # ============================================================
-    # 4. Verify: load the new dataset and print statistics
-    # ============================================================
-    print(f"\n{'='*60}")
-    print("Verification: loading the new dataset...")
-    print(f"{'='*60}")
+    # # ============================================================
+    # # 4. Verify: load the new dataset and print statistics
+    # # ============================================================
+    # print(f"\n{'='*60}")
+    # print("Verification: loading the new dataset...")
+    # print(f"{'='*60}")
 
-    new_builder = tfds.builder_from_directory(output_path)
-    new_dataset = new_builder.as_dataset(split="train")
+    # new_builder = tfds.builder_from_directory(output_path)
+    # new_dataset = new_builder.as_dataset(split="train")
 
-    for ep_idx, episode in enumerate(new_dataset):
-        steps = list(episode["steps"])
-        n = len(steps)
+    # for ep_idx, episode in enumerate(new_dataset):
+    #     steps = list(episode["steps"])
+    #     n = len(steps)
 
-        # Spot-check first step's features
-        first_step = steps[0]
-        obs = first_step["observation"]
-        joint_left = obs["joint_position_arm_left"].numpy()
-        img_shape  = obs["image_camera_head"].shape
-        # depth_shape = obs["depth_camera_head"].shape
+    #     # Spot-check first step's features
+    #     first_step = steps[0]
+    #     obs = first_step["observation"]
+    #     joint_left = obs["joint_position_arm_left"].numpy()
+    #     img_shape  = obs["image_camera_head"].shape
+    #     # depth_shape = obs["depth_camera_head"].shape
 
-        print(f"  Episode {ep_idx}: {n} steps | "
-              f"joint_left[0]={joint_left[:3]}... | "
-              f"img={img_shape}")
-        # ============================================================
-        # 5. Print per-episode comparison table
-        # ============================================================
-        print(f"\n{'='*60}")
-        print(f"  Waypoint Extraction Summary (err_threshold={ERR_THRESHOLD})")
-        print(f"{'='*60}")
-        print(f"  {'Episode':>8} | {'Original':>10} | {'Waypoints':>10} | {'Compression':>12}")
-        print(f"  {'-'*8}-+-{'-'*10}-+-{'-'*10}-+-{'-'*12}")
+    #     print(f"  Episode {ep_idx}: {n} steps | "
+    #           f"joint_left[0]={joint_left[:3]}... | "
+    #           f"img={img_shape}")
+    #     # ============================================================
+    #     # 5. Print per-episode comparison table
+    #     # ============================================================
+    #     print(f"\n{'='*60}")
+    #     print(f"  Waypoint Extraction Summary (err_threshold={ERR_THRESHOLD})")
+    #     print(f"{'='*60}")
+    #     print(f"  {'Episode':>8} | {'Original':>10} | {'Waypoints':>10} | {'Compression':>12}")
+    #     print(f"  {'-'*8}-+-{'-'*10}-+-{'-'*10}-+-{'-'*12}")
 
-        total_orig = 0
-        total_wp = 0
-        for ep_idx, orig, wp in EP_STATS:
-            ratio = orig / wp if wp > 0 else float('inf')
-            print(f"  {ep_idx:>8} | {orig:>10} | {wp:>10} | {ratio:>11.1f}x")
-            total_orig += orig
-            total_wp += wp
+    #     total_orig = 0
+    #     total_wp = 0
+    #     for ep_idx, orig, wp in EP_STATS:
+    #         ratio = orig / wp if wp > 0 else float('inf')
+    #         print(f"  {ep_idx:>8} | {orig:>10} | {wp:>10} | {ratio:>11.1f}x")
+    #         total_orig += orig
+    #         total_wp += wp
 
-        print(f"  {'-'*8}-+-{'-'*10}-+-{'-'*10}-+-{'-'*12}")
-        total_ratio = total_orig / total_wp if total_wp > 0 else float('inf')
-        print(f"  {'Total':>8} | {total_orig:>10} | {total_wp:>10} | {total_ratio:>11.1f}x")
-        print(f"{'='*60}\n")
+    #     print(f"  {'-'*8}-+-{'-'*10}-+-{'-'*10}-+-{'-'*12}")
+    #     total_ratio = total_orig / total_wp if total_wp > 0 else float('inf')
+    #     print(f"  {'Total':>8} | {total_orig:>10} | {total_wp:>10} | {total_ratio:>11.1f}x")
+    #     print(f"{'='*60}\n")
 
-    print(f"\nDone! New RLDS dataset saved at:\n  {output_path}")
-    print(f"\nTo load in your code:")
-    print(f'  builder = tfds.builder_from_directory(r"{output_path}")')
-    print(f'  dataset = builder.as_dataset(split="train")')
+    # print(f"\nDone! New RLDS dataset saved at:\n  {output_path}")
+    # print(f"\nTo load in your code:")
+    # print(f'  builder = tfds.builder_from_directory(r"{output_path}")')
+    # print(f'  dataset = builder.as_dataset(split="train")')
