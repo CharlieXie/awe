@@ -90,8 +90,8 @@ def detect_gripper_changes(actions, left_idx=6, right_idx=13, atol=1.0):
 # 1. Configuration
 # ============================================================
 ERR_THRESHOLD = 0.008     # joint position error threshold (rad)
-SRC_DATA_DIR = r"rlds_data"
-DST_DATA_DIR = r"rlds_data_waypoint"
+SRC_DATA_DIR = r"/workspace/galaxea_data/rlds/part5_r1_lite/1.0.0"
+DST_DATA_DIR = r"rlds_part5"
 # 用于收集每个 episode 的统计信息
 EP_STATS = []  # [(ep_idx, original_steps, waypoint_steps), ...]
 
