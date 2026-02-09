@@ -1,23 +1,97 @@
 """
 Optimized DP waypoint selection (pos_only mode).
 
+- Numba JIT compiled precompute + DP (方案3)
 - Precomputed error matrix: O(1) lookup in DP loop (方案1)
-- Vectorized point-line distance: numpy batch ops (方案2)
-- Only depends on numpy — safe for multiprocessing workers on Windows
+- Vectorized point-line distance (方案2)
+- Only depends on numpy + numba — safe for multiprocessing on Windows
 """
 import numpy as np
+try:
+    import numba
+    HAS_NUMBA = True
+except ImportError:
+    HAS_NUMBA = False
 
 
-def _precompute_err_matrix(actions, gt_states):
-    """
-    Precompute max point-to-line-segment distance for all (start, end) pairs.
+# ================================================================
+# Numba-accelerated core (方案3)
+# ================================================================
+if HAS_NUMBA:
+    @numba.njit(cache=True)
+    def _precompute_err_matrix_numba(actions):
+        """Numba JIT: precompute max point-line distance for all (start, end) pairs."""
+        n = actions.shape[0]
+        D = actions.shape[1]
+        err_matrix = np.zeros((n, n))
 
-    err_matrix[k, i] = max distance of gt_states[k:i] from
-                        line segment (actions[k] -> actions[i])
+        for i in range(n):
+            for j in range(i + 2, n):
+                # line vector
+                lv = actions[j] - actions[i]
+                denom = 0.0
+                for d in range(D):
+                    denom += lv[d] * lv[d]
 
-    Replaces repeated calls to pos_only_geometric_waypoint_trajectory()
-    in the DP inner loop with O(1) table lookups.
-    """
+                max_dist = 0.0
+                for p in range(i, j):  # points i .. j-1
+                    dot_pv_lv = 0.0
+                    for d in range(D):
+                        dot_pv_lv += (actions[p, d] - actions[i, d]) * lv[d]
+
+                    if denom < 1e-30:
+                        t = 0.0
+                    else:
+                        t = dot_pv_lv / denom
+                        if t < 0.0:
+                            t = 0.0
+                        elif t > 1.0:
+                            t = 1.0
+
+                    dist_sq = 0.0
+                    for d in range(D):
+                        proj_d = actions[i, d] + t * lv[d]
+                        diff = actions[p, d] - proj_d
+                        dist_sq += diff * diff
+                    dist = np.sqrt(dist_sq)
+
+                    if dist > max_dist:
+                        max_dist = dist
+
+                err_matrix[i, j] = max_dist
+
+        return err_matrix
+
+    @numba.njit(cache=True)
+    def _dp_core_numba(err_matrix, num_frames, err_threshold):
+        """Numba JIT: DP core with O(1) lookups + early termination."""
+        INF = 1e18
+        memo_count = np.full(num_frames, INF)
+        memo_from = np.full(num_frames, -1, dtype=np.int64)
+
+        memo_count[0] = 0.0
+        if num_frames > 1:
+            memo_count[1] = 1.0
+            memo_from[1] = 1
+
+        for i in range(2, num_frames):
+            for k in range(1, i):
+                if err_matrix[k, i] < err_threshold:
+                    candidate = 1.0 + memo_count[k - 1]
+                    if candidate < memo_count[i]:
+                        memo_count[i] = candidate
+                        memo_from[i] = k
+                        if memo_count[i] == 1.0:
+                            break  # can't do better than 1 waypoint
+
+        return memo_count, memo_from
+
+
+# ================================================================
+# Numpy fallback (no numba)
+# ================================================================
+def _precompute_err_matrix_numpy(actions):
+    """Numpy vectorized fallback."""
     n = len(actions)
     err_matrix = np.zeros((n, n), dtype=np.float64)
 
@@ -25,20 +99,17 @@ def _precompute_err_matrix(actions, gt_states):
         line_start = actions[i]
         for j in range(i + 2, n):
             line_end = actions[j]
-
-            # All points in the segment [i, j)  — vectorized
-            segment_points = gt_states[i:j]          # shape (j-i, D)
-            line_vec = line_end - line_start          # shape (D,)
+            segment_points = actions[i:j]
+            line_vec = line_end - line_start
             denom = np.dot(line_vec, line_vec)
 
             if denom < 1e-30:
-                # Degenerate: start ≈ end
                 distances = np.linalg.norm(segment_points - line_start, axis=1)
             else:
-                point_vecs = segment_points - line_start          # (m, D)
-                t = point_vecs @ line_vec / denom                 # (m,)
+                point_vecs = segment_points - line_start
+                t = point_vecs @ line_vec / denom
                 np.clip(t, 0, 1, out=t)
-                projections = line_start + t[:, np.newaxis] * line_vec  # (m, D)
+                projections = line_start + t[:, np.newaxis] * line_vec
                 distances = np.linalg.norm(segment_points - projections, axis=1)
 
             err_matrix[i, j] = distances.max()
@@ -46,24 +117,50 @@ def _precompute_err_matrix(actions, gt_states):
     return err_matrix
 
 
+def _dp_core_python(err_matrix, num_frames, err_threshold):
+    """Pure Python DP fallback."""
+    INF = float("inf")
+    memo_count = [INF] * num_frames
+    memo_from = [-1] * num_frames
+
+    memo_count[0] = 0
+    if num_frames > 1:
+        memo_count[1] = 1
+        memo_from[1] = 1
+
+    for i in range(2, num_frames):
+        for k in range(1, i):
+            if err_matrix[k, i] < err_threshold:
+                candidate = 1 + memo_count[k - 1]
+                if candidate < memo_count[i]:
+                    memo_count[i] = candidate
+                    memo_from[i] = k
+                    if memo_count[i] == 1:
+                        break
+
+    return memo_count, memo_from
+
+
+# ================================================================
+# Unified interface
+# ================================================================
+def _reconstruct_waypoints(memo_from, num_frames):
+    """Backtrack memo_from[] to recover waypoint list."""
+    waypoints = []
+    i = num_frames - 1
+    while i > 0 and memo_from[i] >= 0:
+        waypoints.append(i)
+        k = memo_from[i]
+        i = k - 1
+    waypoints.reverse()
+    return waypoints
+
+
 def dp_waypoint_selection_fast(actions, err_threshold):
     """
-    Optimized DP waypoint selection for pos_only=True mode.
+    Optimized DP waypoint selection (pos_only=True, actions == gt_states).
 
-    Mathematically equivalent to the original dp_waypoint_selection()
-    when called with pos_only=True and actions == gt_states.
-
-    Parameters
-    ----------
-    actions : np.ndarray, shape (T, D)
-        Joint position trajectory (used as both actions and gt_states).
-    err_threshold : float
-        Maximum allowed geometric error.
-
-    Returns
-    -------
-    list[int]
-        Sorted waypoint indices.
+    Uses Numba JIT if available, else falls back to numpy vectorized version.
     """
     actions = np.asarray(actions, dtype=np.float64)
     num_frames = len(actions)
@@ -71,43 +168,30 @@ def dp_waypoint_selection_fast(actions, err_threshold):
     if num_frames <= 1:
         return list(range(num_frames))
 
-    # pos_only=True → only last frame is forced waypoint
     initial_waypoints = [num_frames - 1]
 
-    # ---- Step 1: Precompute error matrix (vectorized) ----
-    err_matrix = _precompute_err_matrix(actions, actions)
-
-    # ---- Step 2: Threshold sanity check ----
-    # With gt_states == actions, using ALL points as waypoints gives error = 0.
-    # So err_threshold <= 0 is the only pathological case.
     if err_threshold <= 0:
-        print("Error threshold <= 0, returning all points as waypoints.")
         return list(range(1, num_frames))
 
-    # ---- Step 3: DP with O(1) lookups ----
-    memo = {}
-    for i in range(num_frames):
-        memo[i] = (0, [])
-    memo[1] = (1, [1])
+    # --- Precompute error matrix ---
+    if HAS_NUMBA:
+        err_matrix = _precompute_err_matrix_numba(actions)
+    else:
+        err_matrix = _precompute_err_matrix_numpy(actions)
 
-    for i in range(1, num_frames):
-        min_wp_count = float("inf")
-        best_wp = []
+    # --- DP ---
+    if HAS_NUMBA:
+        memo_count, memo_from = _dp_core_numba(err_matrix, num_frames, err_threshold)
+    else:
+        memo_count, memo_from = _dp_core_python(err_matrix, num_frames, err_threshold)
 
-        for k in range(1, i):
-            total_traj_err = err_matrix[k, i]        # O(1) lookup!
+    # --- Reconstruct ---
+    if HAS_NUMBA:
+        memo_from_list = memo_from.tolist()
+    else:
+        memo_from_list = memo_from
 
-            if total_traj_err < err_threshold:
-                sub_count, sub_wp = memo[k - 1]
-                total_count = 1 + sub_count
-
-                if total_count < min_wp_count:
-                    min_wp_count = total_count
-                    best_wp = sub_wp + [i]
-
-        memo[i] = (min_wp_count, best_wp)
-
-    _, waypoints = memo[num_frames - 1]
+    waypoints = _reconstruct_waypoints(memo_from_list, num_frames)
     waypoints += initial_waypoints
     waypoints = sorted(set(waypoints))
 
@@ -116,14 +200,7 @@ def dp_waypoint_selection_fast(actions, err_threshold):
     return waypoints
 
 
-# ---- Multiprocessing worker (top-level, picklable) ----
-
+# ---- Multiprocessing worker ----
 def _extract_worker(args):
-    """
-    Worker function for ProcessPoolExecutor.
-
-    Defined at module top-level so it's picklable on Windows (spawn).
-    Only uses numpy — no TensorFlow, no mocked modules.
-    """
     joint_positions, err_threshold = args
     return dp_waypoint_selection_fast(joint_positions, err_threshold)

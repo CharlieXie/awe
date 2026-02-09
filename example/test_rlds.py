@@ -147,175 +147,164 @@
 # # episode images to video
 
 
-# # import tensorflow_datasets as tfds
-# # import numpy as np
-# # import cv2
-# # import os
-
-# # data_dir = r"C:\Users\chuanlia\Documents\learning_space\ntu\projects\awe\example\rlds_data"
-# # output_dir = r"C:\Users\chuanlia\Documents\learning_space\ntu\projects\awe\example\videos"
-# # os.makedirs(output_dir, exist_ok=True)
-
-# # # 加载数据集
-# # builder = tfds.builder_from_directory(data_dir)
-# # dataset = builder.as_dataset(split="train")
-
-# # # 取第一个 episode
-# # for episode in dataset.take(1):
-# #     steps = list(episode["steps"])
-# #     print(f"Episode 共 {len(steps)} 步")
-
-# #     # 定义要保存的摄像头
-# #     rgb_cameras = [
-# #         "image_camera_head",
-# #         "image_camera_wrist_left",
-# #         "image_camera_wrist_right",
-# #     ]
-# #     depth_cameras = [
-# #         "depth_camera_head",
-# #         "depth_camera_wrist_left",
-# #         "depth_camera_wrist_right",
-# #     ]
-
-# #     fps = 15  # 根据实际采集频率调整，常见 10~50 Hz
-# #     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-
-# #     # ========== 保存 RGB 视频 ==========
-# #     for cam_name in rgb_cameras:
-# #         video_path = os.path.join(output_dir, f"{cam_name}.mp4")
-# #         writer = cv2.VideoWriter(video_path, fourcc, fps, (224, 224))
-
-# #         for step in steps:
-# #             img = step["observation"][cam_name].numpy()  # (224, 224, 3) uint8, RGB
-# #             img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)  # OpenCV 用 BGR
-# #             writer.write(img_bgr)
-
-# #         writer.release()
-# #         print(f"已保存: {video_path}")
-
-# #     # ========== 保存深度视频（归一化 + 伪彩色） ==========
-# #     for cam_name in depth_cameras:
-# #         # 先收集所有帧，计算全局最大最小值用于归一化
-# #         depth_frames = []
-# #         for step in steps:
-# #             depth = step["observation"][cam_name].numpy().squeeze()  # (224, 224) uint16
-# #             depth_frames.append(depth)
-
-# #         depth_frames = np.array(depth_frames)  # (T, 224, 224)
-# #         d_min = depth_frames.min()
-# #         d_max = depth_frames.max()
-
-# #         video_path = os.path.join(output_dir, f"{cam_name}.mp4")
-# #         writer = cv2.VideoWriter(video_path, fourcc, fps, (224, 224))
-
-# #         for depth in depth_frames:
-# #             # 归一化到 0-255
-# #             if d_max > d_min:
-# #                 normalized = ((depth - d_min) / (d_max - d_min) * 255).astype(np.uint8)
-# #             else:
-# #                 normalized = np.zeros_like(depth, dtype=np.uint8)
-# #             # 应用伪彩色，让深度图更直观
-# #             colored = cv2.applyColorMap(normalized, cv2.COLORMAP_VIRIDIS)
-# #             writer.write(colored)
-
-# #         writer.release()
-# #         print(f"已保存: {video_path}")
-
-# #     print(f"\n所有视频已保存到: {output_dir}")import tensorflow_datasets as tfds
+import tensorflow_datasets as tfds
 import numpy as np
-import matplotlib.pyplot as plt
+import cv2
+import os
 
-data_dir = r"C:\Users\chuanlia\Documents\learning_space\ntu\projects\awe\example\rlds_data"
-builder = tfds.builder_from_directory(data_dir)
-dataset = builder.as_dataset(split="train")
+# 定义多组数据源和对应的输出目录
+datasets_config = [
+    {
+        "data_dir": r"C:\Users\chuanlia\Documents\learning_space\ntu\projects\awe\example\rlds_data",
+        "output_dir": r"C:\Users\chuanlia\Documents\learning_space\ntu\projects\awe\example\videos",
+    },
+    {
+        "data_dir": r"C:\Users\chuanlia\Documents\learning_space\ntu\projects\awe\example\rlds_data_waypoint\waypoint_filtered_rlds\1.0.0",
+        "output_dir": r"C:\Users\chuanlia\Documents\learning_space\ntu\projects\awe\example\videos_wp",
+    },
+]
 
-for episode in dataset.take(1):
-    steps = list(episode["steps"])
-    T = len(steps)
-    print(f"Episode 共 {T} 步")
+rgb_cameras = [
+    "image_camera_head",
+    "image_camera_wrist_left",
+    "image_camera_wrist_right",
+]
 
-    # 收集所有 left arm 相关数据
-    joint_pos = []      # 关节位置 (观测)
-    joint_vel = []      # 关节速度 (观测)
-    gripper = []        # 夹爪状态 (观测)
-    action_pos = []     # 关节位置 (动作指令)
-    action_gripper = [] # 夹爪指令
+fps = 15
+fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 
-    for step in steps:
-        obs = step["observation"]
-        act = step["action"].numpy()
+for config in datasets_config:
+    data_dir = config["data_dir"]
+    output_dir = config["output_dir"]
+    os.makedirs(output_dir, exist_ok=True)
 
-        joint_pos.append(obs["joint_position_arm_left"].numpy())
-        joint_vel.append(obs["joint_velocity_arm_left"].numpy())
-        gripper.append(obs["gripper_state_left"].numpy())
-        action_pos.append(act[0:6])       # action 前6维 = 左臂关节目标
-        action_gripper.append(act[6])     # action 第7维 = 左夹爪目标
+    print(f"\n{'='*60}")
+    print(f"处理数据集: {data_dir}")
+    print(f"输出目录:   {output_dir}")
+    print(f"{'='*60}")
 
-    joint_pos = np.array(joint_pos)           # (T, 6)
-    joint_vel = np.array(joint_vel)           # (T, 6)
-    gripper = np.array(gripper)               # (T, 1)
-    action_pos = np.array(action_pos)         # (T, 6)
-    action_gripper = np.array(action_gripper) # (T,)
-    time_steps = np.arange(T)
+    # 加载数据集
+    builder = tfds.builder_from_directory(data_dir)
+    dataset = builder.as_dataset(split="train")
 
-    joint_names = [f"Joint {i}" for i in range(6)]
+    # 取第一个 episode
+    for episode in dataset.skip(111).take(1):
+    # for episode in dataset.take(1):
+        steps = list(episode["steps"])
+        print(f"Episode 共 {len(steps)} 步")
 
-    # ========== 图1: 关节位置 (观测 vs 动作指令) ==========
-    fig, axes = plt.subplots(3, 2, figsize=(16, 12))
-    fig.suptitle("Left Arm - Joint Position: Observation vs Action Command", fontsize=14)
+        # ========== 保存 RGB 视频 ==========
+        for cam_name in rgb_cameras:
+            video_path = os.path.join(output_dir, f"{cam_name}.mp4")
+            writer = cv2.VideoWriter(video_path, fourcc, fps, (224, 224))
 
-    for i in range(6):
-        ax = axes[i // 2, i % 2]
-        ax.plot(time_steps, joint_pos[:, i], label="obs (当前位置)", linewidth=1.5)
-        ax.plot(time_steps, action_pos[:, i], label="action (目标位置)", linewidth=1.5, linestyle="--")
-        ax.set_title(joint_names[i])
-        ax.set_xlabel("Step")
-        ax.set_ylabel("Position (rad)")
-        ax.legend(fontsize=8)
-        ax.grid(True, alpha=0.3)
+            for step in steps:
+                img = step["observation"][cam_name].numpy()  # (224, 224, 3) uint8, RGB
+                img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+                writer.write(img_bgr)
 
-    plt.tight_layout()
-    plt.savefig("left_arm_pos_obs_vs_action.png", dpi=150)
-    plt.show()
+            writer.release()
+            print(f"已保存: {video_path}")
 
-    # ========== 图2: 关节速度 ==========
-    fig, axes = plt.subplots(3, 2, figsize=(16, 12))
-    fig.suptitle("Left Arm - Joint Velocity", fontsize=14)
+        print(f"所有视频已保存到: {output_dir}")
 
-    for i in range(6):
-        ax = axes[i // 2, i % 2]
-        ax.plot(time_steps, joint_vel[:, i], linewidth=1.5, color="tab:green")
-        ax.set_title(joint_names[i])
-        ax.set_xlabel("Step")
-        ax.set_ylabel("Velocity (rad/s)")
-        ax.grid(True, alpha=0.3)
 
-    plt.tight_layout()
-    plt.savefig("left_arm_velocity.png", dpi=150)
-    plt.show()
 
-    # ========== 图3: 夹爪 (观测 vs 动作指令) ==========
-    fig, ax = plt.subplots(figsize=(12, 4))
-    ax.plot(time_steps, gripper[:, 0], label="obs (当前状态)", linewidth=2)
-    ax.plot(time_steps, action_gripper, label="action (目标值)", linewidth=2, linestyle="--")
-    ax.set_title("Left Gripper: Observation vs Action Command")
-    ax.set_xlabel("Step")
-    ax.set_ylabel("Gripper State")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+# import tensorflow_datasets as tfds
+# import numpy as np
+# import matplotlib.pyplot as plt
 
-    plt.tight_layout()
-    plt.savefig("left_arm_gripper.png", dpi=150)
-    plt.show()
+# data_dir = r"C:\Users\chuanlia\Documents\learning_space\ntu\projects\awe\example\rlds_data"
+# builder = tfds.builder_from_directory(data_dir)
+# dataset = builder.as_dataset(split="train")
 
-    # ========== 导出为 CSV 方便后续分析 ==========
-    header = ",".join(
-        [f"pos_joint{i}" for i in range(6)] +
-        [f"vel_joint{i}" for i in range(6)] +
-        ["gripper_state"] +
-        [f"action_joint{i}" for i in range(6)] +
-        ["action_gripper"]
-    )
-    data = np.hstack([joint_pos, joint_vel, gripper, action_pos, action_gripper[:, None]])
-    np.savetxt("left_arm_trajectory.csv", data, delimiter=",", header=header, comments="")
-    print("轨迹已导出为 left_arm_trajectory.csv")
+# for episode in dataset.take(1):
+#     steps = list(episode["steps"])
+#     T = len(steps)
+#     print(f"Episode 共 {T} 步")
+
+#     # 收集所有 left arm 相关数据
+#     joint_pos = []      # 关节位置 (观测)
+#     joint_vel = []      # 关节速度 (观测)
+#     gripper = []        # 夹爪状态 (观测)
+#     action_pos = []     # 关节位置 (动作指令)
+#     action_gripper = [] # 夹爪指令
+
+#     for step in steps:
+#         obs = step["observation"]
+#         act = step["action"].numpy()
+
+#         joint_pos.append(obs["joint_position_arm_left"].numpy())
+#         joint_vel.append(obs["joint_velocity_arm_left"].numpy())
+#         gripper.append(obs["gripper_state_left"].numpy())
+#         action_pos.append(act[0:6])       # action 前6维 = 左臂关节目标
+#         action_gripper.append(act[6])     # action 第7维 = 左夹爪目标
+
+#     joint_pos = np.array(joint_pos)           # (T, 6)
+#     joint_vel = np.array(joint_vel)           # (T, 6)
+#     gripper = np.array(gripper)               # (T, 1)
+#     action_pos = np.array(action_pos)         # (T, 6)
+#     action_gripper = np.array(action_gripper) # (T,)
+#     time_steps = np.arange(T)
+
+#     joint_names = [f"Joint {i}" for i in range(6)]
+
+#     # ========== 图1: 关节位置 (观测 vs 动作指令) ==========
+#     fig, axes = plt.subplots(3, 2, figsize=(16, 12))
+#     fig.suptitle("Left Arm - Joint Position: Observation vs Action Command", fontsize=14)
+
+#     for i in range(6):
+#         ax = axes[i // 2, i % 2]
+#         ax.plot(time_steps, joint_pos[:, i], label="obs (当前位置)", linewidth=1.5)
+#         ax.plot(time_steps, action_pos[:, i], label="action (目标位置)", linewidth=1.5, linestyle="--")
+#         ax.set_title(joint_names[i])
+#         ax.set_xlabel("Step")
+#         ax.set_ylabel("Position (rad)")
+#         ax.legend(fontsize=8)
+#         ax.grid(True, alpha=0.3)
+
+#     plt.tight_layout()
+#     plt.savefig("left_arm_pos_obs_vs_action.png", dpi=150)
+#     plt.show()
+
+#     # ========== 图2: 关节速度 ==========
+#     fig, axes = plt.subplots(3, 2, figsize=(16, 12))
+#     fig.suptitle("Left Arm - Joint Velocity", fontsize=14)
+
+#     for i in range(6):
+#         ax = axes[i // 2, i % 2]
+#         ax.plot(time_steps, joint_vel[:, i], linewidth=1.5, color="tab:green")
+#         ax.set_title(joint_names[i])
+#         ax.set_xlabel("Step")
+#         ax.set_ylabel("Velocity (rad/s)")
+#         ax.grid(True, alpha=0.3)
+
+#     plt.tight_layout()
+#     plt.savefig("left_arm_velocity.png", dpi=150)
+#     plt.show()
+
+#     # ========== 图3: 夹爪 (观测 vs 动作指令) ==========
+#     fig, ax = plt.subplots(figsize=(12, 4))
+#     ax.plot(time_steps, gripper[:, 0], label="obs (当前状态)", linewidth=2)
+#     ax.plot(time_steps, action_gripper, label="action (目标值)", linewidth=2, linestyle="--")
+#     ax.set_title("Left Gripper: Observation vs Action Command")
+#     ax.set_xlabel("Step")
+#     ax.set_ylabel("Gripper State")
+#     ax.legend()
+#     ax.grid(True, alpha=0.3)
+
+#     plt.tight_layout()
+#     plt.savefig("left_arm_gripper.png", dpi=150)
+#     plt.show()
+
+#     # ========== 导出为 CSV 方便后续分析 ==========
+#     header = ",".join(
+#         [f"pos_joint{i}" for i in range(6)] +
+#         [f"vel_joint{i}" for i in range(6)] +
+#         ["gripper_state"] +
+#         [f"action_joint{i}" for i in range(6)] +
+#         ["action_gripper"]
+#     )
+#     data = np.hstack([joint_pos, joint_vel, gripper, action_pos, action_gripper[:, None]])
+#     np.savetxt("left_arm_trajectory.csv", data, delimiter=",", header=header, comments="")
+#     print("轨迹已导出为 left_arm_trajectory.csv")

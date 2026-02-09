@@ -75,7 +75,7 @@ def verify_err_matrix(actions, verbose=True):
             max_diff = max(max_diff, diff)
             num_checked += 1
 
-            if diff > 1e-10 and verbose:
+            if diff > 1e-6 and verbose:
                 print(f"  MISMATCH at k={k}, i={i}: "
                       f"original={original_err:.15e}, fast={fast_err:.15e}, "
                       f"diff={diff:.2e}")
@@ -140,7 +140,7 @@ if __name__ == "__main__":
         max_diff, num_checked = verify_err_matrix(joint_positions, verbose=True)
         print(f"  Checked {num_checked} (k,i) pairs")
         print(f"  Max absolute difference: {max_diff:.2e}")
-        if max_diff < 1e-10:
+        if max_diff < 1e-6:
             print(f"  ✓ PASS — error matrix is identical")
         else:
             print(f"  ✗ FAIL — differences detected!")

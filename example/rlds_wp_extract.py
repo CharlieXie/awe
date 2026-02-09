@@ -2,7 +2,8 @@
 rlds_wp_extract.py
 ==================
 Extract waypoints from RLDS dataset using AWE dp_waypoint_selection
-on joint_position_arm_left (6D joint space), err_threshold=0.001.
+on joint_position_arm_left + joint_position_arm_right (6D joint space each),
+with gripper state change detection, err_threshold=0.008.
 
 All other features at waypoint indices are preserved.
 Output is a valid RLDS dataset loadable with tfds.builder_from_directory().
@@ -18,7 +19,11 @@ import shutil
 import numpy as np
 import tensorflow as tf
 import tensorflow_datasets as tfds
+import json
 
+# 用于收集每个 episode 的统计信息
+# EP_STATS = []  # [(ep_idx, original_steps, waypoint_steps), ...]
+WAYPOINT_MAP = []  # 保存每个 episode 的 waypoint 原始索引
 # ============================================================
 # 0. Mock mujoco_py / glfw (same as rlds_wp_traj.py)
 # ============================================================
@@ -52,7 +57,57 @@ except (ImportError, ModuleNotFoundError):
 awe_root = r"C:\Users\chuanlia\Documents\learning_space\ntu\projects\awe"
 sys.path.insert(0, awe_root)
 
-from waypoint_extraction import dp_waypoint_selection
+# from waypoint_extraction import dp_waypoint_selection
+# from waypoint_extraction.extract_waypoints_fast import (
+#     dp_waypoint_selection_fast,
+#     _extract_worker,
+# )
+from waypoint_extraction.extract_waypoints_fast import dp_waypoint_selection_fast
+
+# ============================================================
+# Helper: detect gripper state change indices
+# ============================================================
+# def detect_gripper_changes(actions, left_idx=6, right_idx=13, atol=1.0):
+#     """
+#     Detect gripper command changes from the ACTION signal (step function).
+#     Since action commands are discrete jumps (not smooth curves),
+#     this produces very few waypoints — typically 2 per open/close event.
+#     """
+#     change_indices = set()
+#     for idx in [left_idx, right_idx]:
+#         gripper_cmd = actions[:, idx]
+#         for i in range(len(gripper_cmd) - 1):
+#             if abs(gripper_cmd[i] - gripper_cmd[i + 1]) > atol:
+#                 change_indices.add(i)
+#                 change_indices.add(i + 1)
+#     return sorted(change_indices)
+
+def detect_gripper_changes(actions, left_idx=6, right_idx=13, atol=1.0):
+    """
+    Detect gripper command transitions from the ACTION signal.
+    Consecutive changing frames are grouped into a single transition event;
+    only ONE index per event is returned (the first frame with the new value).
+
+    For Episode 4 (4 transitions): returns exactly 4 waypoints.
+    """
+    change_indices = set()
+    for idx in [left_idx, right_idx]:
+        gripper_cmd = actions[:, idx]
+        if len(gripper_cmd) < 2:
+            continue
+
+        diffs = np.abs(np.diff(gripper_cmd))  # (T-1,)
+        is_changing = diffs > atol
+
+        # Group consecutive "changing" frames into one event
+        # Mark only the FIRST changing frame's target (i+1)
+        prev_changing = False
+        for i in range(len(is_changing)):
+            if is_changing[i] and not prev_changing:
+                change_indices.add(i + 1)   # first frame with the new value
+            prev_changing = is_changing[i]
+
+    return sorted(change_indices)
 
 # ============================================================
 # 1. Configuration
@@ -68,16 +123,20 @@ EP_STATS = []  # [(ep_idx, original_steps, waypoint_steps), ...]
 #    Feature spec mirrors the original features.json exactly.
 # ============================================================
 class WaypointFilteredRLDS(tfds.core.GeneratorBasedBuilder):
-    """RLDS dataset filtered by AWE waypoints on joint_position_arm_left."""
+    # '1.0.0': f'Waypoint-filtered with err_threshold={ERR_THRESHOLD} on both arms + gripper changes.',
 
     VERSION = tfds.core.Version('1.0.0')
     RELEASE_NOTES = {
-        '1.0.0': f'Waypoint-filtered with err_threshold={ERR_THRESHOLD} on joint_position_arm_left.',
+        '1.0.0': f'Waypoint-filtered with err_threshold={ERR_THRESHOLD} on both arms + gripper changes.',
     }
-
+    @property
+    def _disable_shuffling(self):
+        """Disable tfds' hash-based shuffler to preserve episode order."""
+        return True
     def _info(self) -> tfds.core.DatasetInfo:
         return tfds.core.DatasetInfo(
             builder=self,
+            disable_shuffling=True,   # ← ADD THIS
             features=tfds.features.FeaturesDict({
                 'steps': tfds.features.Dataset({
                     'observation': tfds.features.FeaturesDict({
@@ -122,10 +181,10 @@ class WaypointFilteredRLDS(tfds.core.GeneratorBasedBuilder):
         }
 
     def _generate_examples(self):
-        """Load source RLDS, extract waypoints per episode, yield filtered episodes."""
+        """Single-pass: read data once, run fast DP inline, yield filtered."""
         print(f"\n{'='*60}")
         print(f"Loading source dataset: {SRC_DATA_DIR}")
-        print(f"Waypoint extraction: joint_position_arm_left, err_threshold={ERR_THRESHOLD}")
+        print(f"Waypoint extraction: both arms + gripper, err_threshold={ERR_THRESHOLD}")
         print(f"{'='*60}\n")
 
         src_builder = tfds.builder_from_directory(SRC_DATA_DIR)
@@ -142,20 +201,23 @@ class WaypointFilteredRLDS(tfds.core.GeneratorBasedBuilder):
                 print(f"  Episode {ep_idx}: empty, skipping")
                 continue
 
-            # --- Extract joint_position_arm_left trajectory (T, 6) ---
-            joint_positions = np.array([
-                step["observation"]["joint_position_arm_left"].numpy()
-                for step in steps
+            # --- Extract joint positions + gripper (from already-loaded steps) ---
+            jp_left = np.array([
+                s["observation"]["joint_position_arm_left"].numpy() for s in steps
             ])
+            jp_right = np.array([
+                s["observation"]["joint_position_arm_right"].numpy() for s in steps
+            ])
+            actions_all = np.array([s["action"].numpy() for s in steps])  # (T, 26)
+            # gl = np.array([
 
-            # --- AWE dp_waypoint_selection ---
-            waypoints = dp_waypoint_selection(
-                env=None,
-                actions=joint_positions,
-                gt_states=joint_positions,
-                err_threshold=ERR_THRESHOLD,
-                pos_only=True,
-            )
+            wp_left = set(dp_waypoint_selection_fast(jp_left, ERR_THRESHOLD))
+            wp_right = set(dp_waypoint_selection_fast(jp_right, ERR_THRESHOLD))
+            wp_gripper = set(detect_gripper_changes(actions_all))
+            
+            waypoints = sorted(wp_left | wp_right | wp_gripper)
+            print(f"    [Debug] Waypoint breakdown -> Left: {len(wp_left)}, Right: {len(wp_right)}, Gripper: {len(wp_gripper)}")
+
 
             # Ensure start point (index 0) is included
             wp_indices = sorted(set([0] + waypoints))
@@ -163,11 +225,18 @@ class WaypointFilteredRLDS(tfds.core.GeneratorBasedBuilder):
 
             total_src_steps += T
             total_dst_steps += n_wp
-            # 用于收集每个 episode 的统计信息
             EP_STATS.append((ep_idx, T, n_wp))
             print(f"  Episode {ep_idx}: {T} steps -> {n_wp} waypoints "
-                  f"({T / n_wp:.1f}x compression)")
-            
+                f"({T / n_wp:.1f}x compression)")
+
+            file_path = episode["episode_metadata"]["file_path"].numpy().decode("utf-8")
+            WAYPOINT_MAP.append({
+                "src_ep_idx": ep_idx,
+                "file_path": file_path,
+                "original_steps": T,
+                "waypoint_steps": n_wp,
+                "waypoint_indices": [int(x) for x in wp_indices],
+            })
 
             # --- Build filtered episode ---
             ep_steps = []
@@ -177,30 +246,20 @@ class WaypointFilteredRLDS(tfds.core.GeneratorBasedBuilder):
 
                 step_dict = {
                     "observation": {
-                        # Joint positions
                         "joint_position_arm_left":  obs["joint_position_arm_left"].numpy(),
                         "joint_position_arm_right": obs["joint_position_arm_right"].numpy(),
                         "joint_position_torso":     obs["joint_position_torso"].numpy(),
-                        # Joint velocities
                         "joint_velocity_arm_left":  obs["joint_velocity_arm_left"].numpy(),
                         "joint_velocity_arm_right": obs["joint_velocity_arm_right"].numpy(),
-                        # Gripper states
                         "gripper_state_left":       obs["gripper_state_left"].numpy(),
                         "gripper_state_right":      obs["gripper_state_right"].numpy(),
-                        # Base & last action
                         "base_velocity":            obs["base_velocity"].numpy(),
                         "last_action":              obs["last_action"].numpy(),
-                        # RGB images
                         "image_camera_head":        obs["image_camera_head"].numpy(),
                         "image_camera_wrist_left":  obs["image_camera_wrist_left"].numpy(),
                         "image_camera_wrist_right": obs["image_camera_wrist_right"].numpy(),
-                        # # Depth images
-                        # "depth_camera_head":        obs["depth_camera_head"].numpy(),
-                        # "depth_camera_wrist_left":  obs["depth_camera_wrist_left"].numpy(),
-                        # "depth_camera_wrist_right": obs["depth_camera_wrist_right"].numpy(),
                     },
                     "action": step["action"].numpy(),
-                    # Update is_first / is_last for the new (filtered) episode
                     "is_first": bool(new_i == 0),
                     "is_last":  bool(new_i == n_wp - 1),
                     "language_instruction": step["language_instruction"].numpy().decode("utf-8"),
@@ -209,10 +268,7 @@ class WaypointFilteredRLDS(tfds.core.GeneratorBasedBuilder):
                 }
                 ep_steps.append(step_dict)
 
-            # Episode metadata
-            ep_metadata = {
-                "file_path": episode["episode_metadata"]["file_path"].numpy().decode("utf-8"),
-            }
+            ep_metadata = {"file_path": file_path}
 
             yield ep_idx, {
                 "steps": ep_steps,
@@ -221,16 +277,17 @@ class WaypointFilteredRLDS(tfds.core.GeneratorBasedBuilder):
 
         print(f"\n{'='*60}")
         print(f"Summary: {total_src_steps} total steps -> {total_dst_steps} waypoints "
-              f"({total_src_steps / max(total_dst_steps, 1):.1f}x overall compression)")
+            f"({total_src_steps / max(total_dst_steps, 1):.1f}x overall compression)")
         print(f"{'='*60}\n")
-
 
 # ============================================================
 # 3. Main: build and save the new dataset
 # ============================================================
 if __name__ == "__main__":
     # The builder stores data at: DST_DATA_DIR / waypoint_filtered_rlds / 1.0.0 /
+    # os.environ['PYTHONPATH'] = awe_root + os.pathsep + os.environ.get('PYTHONPATH', '')
     output_path = os.path.join(DST_DATA_DIR, "waypoint_filtered_rlds", "1.0.0")
+    # from waypoint_extraction.extract_waypoints_fast import dp_waypoint_selection_fast
 
     # Clear existing output to allow regeneration
     if os.path.exists(output_path):
@@ -241,7 +298,29 @@ if __name__ == "__main__":
     print(f"Output directory: {DST_DATA_DIR}")
     builder = WaypointFilteredRLDS(data_dir=DST_DATA_DIR)
     builder.download_and_prepare()
+    # builder.download_and_prepare()
 
+    # ============================================================
+    # Save waypoint index mapping (for verification)
+    # ============================================================
+    wp_index_path = os.path.join(DST_DATA_DIR, "waypoint_indices.json")
+    wp_index_data = {
+        "config": {
+            "err_threshold": ERR_THRESHOLD,
+            # "extraction_key": "joint_position_arm_left",
+            "extraction_key": "joint_position_arm_left + joint_position_arm_right + gripper_changes",
+            "src_data_dir": SRC_DATA_DIR,
+            "dst_data_dir": DST_DATA_DIR,
+            "total_episodes": len(WAYPOINT_MAP),
+            "total_src_steps": sum(ep["original_steps"] for ep in WAYPOINT_MAP),
+            "total_wp_steps": sum(len(ep["waypoint_indices"]) for ep in WAYPOINT_MAP),
+        },
+        "episodes": WAYPOINT_MAP,
+    }
+    with open(wp_index_path, "w", encoding="utf-8") as f:
+        json.dump(wp_index_data, f, indent=2, ensure_ascii=False)
+    print(f"\nWaypoint indices saved to: {wp_index_path}")
+    
     # ============================================================
     # 4. Verify: load the new dataset and print statistics
     # ============================================================
