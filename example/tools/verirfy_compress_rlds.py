@@ -19,8 +19,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 # ==================== Configuration ====================
 ORIG_DIR = r"/workspace/galaxea_data/rlds/part1_r1_lite/1.0.0"
-NEW_DIR  = r"/workspace/awe/example/example/part1_r1_lite_compressed"
-NUM_WORKERS = min(8, os.cpu_count() or 4)
+NEW_DIR  = r"/workspace/awe/example/part1_r1_lite_compressed"
+NUM_WORKERS = 20
 
 RGB_IMAGE_KEYS = [
     "steps/observation/image_camera_head",
@@ -65,6 +65,7 @@ def verify_shard(orig_path: str, new_path: str, shard_idx: int) -> dict:
     """
     os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
     import tensorflow as tf
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
     filename = os.path.basename(orig_path)
     errors = []

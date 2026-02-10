@@ -79,10 +79,12 @@ sys.path.insert(0, awe_root)
 # ============================================================
 # Configuration
 # ============================================================
-ERR_THRESHOLD = 0.008
-SRC_DATA_DIR  = r"/workspace/galaxea_data/rlds/part5_r1_lite/1.0.0"
-DST_DATA_DIR  = r"rlds_part5"
-EPISODES_PER_SHARD = 8   # how many episodes to pack into each output shard
+ERR_THRESHOLD = 0.001
+SRC_DATA_DIR  = r"/workspace/awe/example/part1_r1_lite_compressed"
+DST_DATA_DIR  = r"/workspace/awe/example/part1_r1_lite_compressed_wp_0001"
+# SRC_DATA_DIR  = r"C:\Users\chuanlia\Documents\learning_space\ntu\projects\awe\example\rlds_data_jpeg"
+# DST_DATA_DIR  = r"C:\Users\chuanlia\Documents\learning_space\ntu\projects\awe\example\rlds_jpeg_wp"
+EPISODES_PER_SHARD = 38   # how many episodes to pack into each output shard
 
 
 # ============================================================
@@ -155,6 +157,12 @@ def _serialize_episode(ep_steps, file_path, tf):
     variant_idx_vals = []
     segment_idx_vals = []
 
+    # >>> NEW: waypoint metadata per step
+    waypoint_duration_vals     = []
+    is_waypoint_end_vals       = []
+    original_step_index_vals   = []
+    # <<< NEW
+
     # Bytes (images as JPEG, text as UTF-8)
     img_head_vals        = []
     img_wrist_left_vals  = []
@@ -166,7 +174,7 @@ def _serialize_episode(ep_steps, file_path, tf):
     for step in ep_steps:
         obs = step["observation"]
 
-        # Float tensors → extend flat list
+        # Float tensors -> extend flat list
         joint_pos_left_vals.extend(obs["joint_position_arm_left"].flat)
         joint_pos_right_vals.extend(obs["joint_position_arm_right"].flat)
         joint_pos_torso_vals.extend(obs["joint_position_torso"].flat)
@@ -178,7 +186,7 @@ def _serialize_episode(ep_steps, file_path, tf):
         last_action_vals.extend(obs["last_action"].flat)
         action_vals.extend(step["action"].flat)
 
-        # Bool → int64 (tf.train.Example has no bool type)
+        # Bool -> int64 (tf.train.Example has no bool type)
         is_first_vals.append(int(step["is_first"]))
         is_last_vals.append(int(step["is_last"]))
 
@@ -186,13 +194,24 @@ def _serialize_episode(ep_steps, file_path, tf):
         variant_idx_vals.append(step["variant_idx"])
         segment_idx_vals.append(step["segment_idx"])
 
-        # Images → JPEG bytes
-        img_head_vals.append(
-            _encode_jpeg(obs["image_camera_head"]).numpy())
-        img_wrist_left_vals.append(
-            _encode_jpeg(obs["image_camera_wrist_left"]).numpy())
-        img_wrist_right_vals.append(
-            _encode_jpeg(obs["image_camera_wrist_right"]).numpy())
+        # >>> NEW: collect waypoint metadata
+        waypoint_duration_vals.append(step["waypoint_duration"])
+        is_waypoint_end_vals.append(int(step["is_waypoint_end"]))
+        original_step_index_vals.append(step["original_step_index"])
+        # <<< NEW
+
+        # # Images -> JPEG bytes
+        # img_head_vals.append(
+        #     _encode_jpeg(obs["image_camera_head"]).numpy())
+        # img_wrist_left_vals.append(
+        #     _encode_jpeg(obs["image_camera_wrist_left"]).numpy())
+        # img_wrist_right_vals.append(
+        #     _encode_jpeg(obs["image_camera_wrist_right"]).numpy())
+
+        # Images — pass through raw JPEG bytes (no re-encoding)
+        img_head_vals.append(obs["image_camera_head"])
+        img_wrist_left_vals.append(obs["image_camera_wrist_left"])
+        img_wrist_right_vals.append(obs["image_camera_wrist_right"])
 
         # Text
         lang_vals.append(step["language_instruction"].encode("utf-8"))
@@ -237,6 +256,14 @@ def _serialize_episode(ep_steps, file_path, tf):
             _int64_feature(variant_idx_vals),
         "steps/segment_idx":
             _int64_feature(segment_idx_vals),
+        # >>> NEW: waypoint metadata (int64)
+        "steps/waypoint_duration":
+            _int64_feature(waypoint_duration_vals),
+        "steps/is_waypoint_end":
+            _int64_feature(is_waypoint_end_vals),
+        "steps/original_step_index":
+            _int64_feature(original_step_index_vals),
+        # <<< NEW
         # Text (bytes)
         "steps/language_instruction":
             _bytes_feature(lang_vals),
@@ -301,9 +328,24 @@ def worker_process(args):
     print(f"[Worker {worker_id}] Starting: split={split_str}  "
           f"ep_offset={ep_offset} -> {worker_dst}", flush=True)
 
+    # # ---- Load source dataset (only this worker's shards) ----
+    # src_builder = tfds.builder_from_directory(src_data_dir)
+    # src_dataset = src_builder.as_dataset(split=split_str)
     # ---- Load source dataset (only this worker's shards) ----
+    # SkipDecoding for images: keep raw JPEG bytes, avoid decode->re-encode quality loss
     src_builder = tfds.builder_from_directory(src_data_dir)
-    src_dataset = src_builder.as_dataset(split=split_str)
+    src_dataset = src_builder.as_dataset(
+        split=split_str,
+        decoders={
+            'steps': {
+                'observation': {
+                    'image_camera_head': tfds.decode.SkipDecoding(),
+                    'image_camera_wrist_left': tfds.decode.SkipDecoding(),
+                    'image_camera_wrist_right': tfds.decode.SkipDecoding(),
+                }
+            }
+        },
+    )
 
     t0 = time.time()
     ep_stats_local = []
@@ -376,6 +418,15 @@ def worker_process(args):
         for new_i, orig_i in enumerate(wp_indices):
             step = steps[orig_i]
             obs = step["observation"]
+
+            # >>> NEW: compute waypoint_duration and is_waypoint_end
+            if new_i < n_wp - 1:
+                duration = wp_indices[new_i + 1] - wp_indices[new_i]
+            else:
+                duration = 0  # last waypoint has no next waypoint
+            is_wp_end = bool(new_i == n_wp - 1)
+            # <<< NEW
+
             step_dict = {
                 "observation": {
                     "joint_position_arm_left":  obs["joint_position_arm_left"].numpy(),
@@ -397,6 +448,11 @@ def worker_process(args):
                 "language_instruction": step["language_instruction"].numpy().decode("utf-8"),
                 "variant_idx": int(step["variant_idx"].numpy()),
                 "segment_idx": int(step["segment_idx"].numpy()),
+                # >>> NEW: waypoint metadata fields
+                "waypoint_duration": int(duration),
+                "is_waypoint_end": is_wp_end,
+                "original_step_index": int(orig_i),
+                # <<< NEW
             }
             ep_steps.append(step_dict)
 
@@ -652,7 +708,24 @@ def write_features_json(final_output_dir):
                                         "pythonClassName": "tensorflow_datasets.core.features.tensor_feature.Tensor",
                                         "tensor": {"shape": {"dimensions": ["26"]}, "dtype": "float32", "encoding": "none"},
                                         "description": "Robot action, consists of [6x arm joint position, 1x gripper absolute (0...100, 0 close, 100 open)] x 2. + [6x torso cmd] + [6x chasis cmd]"
+                                    },
+                                    # >>> NEW: three waypoint metadata features
+                                    "waypoint_duration": {
+                                        "pythonClassName": "tensorflow_datasets.core.features.scalar.Scalar",
+                                        "tensor": {"shape": {}, "dtype": "int32", "encoding": "none"},
+                                        "description": "Number of original timesteps from this waypoint to the next waypoint. 0 for the last waypoint in the episode."
+                                    },
+                                    "is_waypoint_end": {
+                                        "pythonClassName": "tensorflow_datasets.core.features.scalar.Scalar",
+                                        "tensor": {"shape": {}, "dtype": "bool", "encoding": "none"},
+                                        "description": "True if this is the last waypoint in the episode. Used as VLM stop-generation signal."
+                                    },
+                                    "original_step_index": {
+                                        "pythonClassName": "tensorflow_datasets.core.features.scalar.Scalar",
+                                        "tensor": {"shape": {}, "dtype": "int32", "encoding": "none"},
+                                        "description": "Index of this waypoint in the original (unfiltered) episode. Useful for action expert data retrieval."
                                     }
+                                    # <<< NEW
                                 }
                             }
                         },

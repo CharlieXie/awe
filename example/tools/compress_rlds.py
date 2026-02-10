@@ -21,9 +21,10 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 # ==================== Configuration ====================
 INPUT_DIR  = r"/workspace/galaxea_data/rlds/part1_r1_lite/1.0.0"
-OUTPUT_DIR = r"/workspace/awe/example/example/part1_r1_lite_compressed"
+OUTPUT_DIR = r"/workspace/awe/example/part1_r1_lite_compressed"
 JPEG_QUALITY = 95
-NUM_WORKERS  = min(8, os.cpu_count() or 4)   # auto-detect, cap at 8
+# NUM_WORKERS  = min(8, os.cpu_count() or 4)   # auto-detect, cap at 8
+NUM_WORKERS  = 20
 
 # RGB image keys (PNG -> JPEG)
 RGB_IMAGE_KEYS = [
@@ -105,6 +106,7 @@ def process_shard(input_path: str, output_path: str, shard_idx: int) -> dict:
     # Lazy import TF in worker process (avoids pickle issues on Windows)
     os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
     import tensorflow as tf
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
     filename = os.path.basename(input_path)
     orig_size = os.path.getsize(input_path)
@@ -214,6 +216,7 @@ def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     tfrecord_files = sorted(glob.glob(os.path.join(INPUT_DIR, "*.tfrecord*")))
+    # tfrecord_files = tfrecord_files[:800]  # 只处理前 800 个
     if not tfrecord_files:
         print(f"No TFRecord files found in {INPUT_DIR}")
         sys.exit(1)
