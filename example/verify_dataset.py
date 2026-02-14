@@ -3,6 +3,10 @@ verify_dataset.py
 ==================
 Comprehensive verification of the waypoint-filtered RLDS dataset.
 
+Supports two dataset modes (set DATASET_MODE below):
+  - "r1_lite"  : Galaxea R1-Lite dual-arm robot
+  - "libero"   : LIBERO Franka Panda single-arm robot
+
 5 levels of checks:
   1. JSON metadata: episode count from dataset_info.json
   2. Waypoint indices: completeness from waypoint_indices.json
@@ -10,8 +14,7 @@ Comprehensive verification of the waypoint-filtered RLDS dataset.
   4. Sampled content: shape/dtype/flag checks on sampled episodes
   5. Cross-validation: compare waypoint steps against source dataset
 
-Usage (inside awe_venv):
-    conda activate awe_venv
+Usage:
     cd /workspace/awe/example
     python verify_dataset.py
 """
@@ -22,11 +25,46 @@ import json
 import time
 import numpy as np
 
-# Paths
-NEW_DATASET_DIR = "rlds_part5/waypoint_filtered_rlds/1.0.0"
-WP_INDICES_PATH = "rlds_part5/waypoint_indices.json"
-SRC_DATASET_DIR = "/workspace/galaxea_data/rlds/part5_r1_lite/1.0.0"
-EXPECTED_EPISODES = 16218
+# ============================================================
+# Dataset mode: "r1_lite" or "libero"
+# ============================================================
+DATASET_MODE = "libero"
+
+if DATASET_MODE == "r1_lite":
+    NEW_DATASET_DIR = "rlds_part5/waypoint_filtered_rlds/1.0.0"
+    WP_INDICES_PATH = "rlds_part5/waypoint_indices.json"
+    SRC_DATASET_DIR = "/workspace/galaxea_data/rlds/part5_r1_lite/1.0.0"
+    EXPECTED_EPISODES = 16218
+    IMAGE_KEYS = ["image_camera_head", "image_camera_wrist_left", "image_camera_wrist_right"]
+    IMAGE_SHAPE = (224, 224, 3)
+    OBS_SHAPE_CHECKS = {
+        "joint_position_arm_left": (6,),
+        "joint_position_arm_right": (6,),
+        "joint_position_torso": (4,),
+        "joint_velocity_arm_left": (6,),
+        "joint_velocity_arm_right": (6,),
+        "gripper_state_left": (1,),
+        "gripper_state_right": (1,),
+        "base_velocity": (3,),
+        "last_action": (26,),
+    }
+    ACTION_SHAPE = (26,)
+    CROSS_VAL_OBS_KEY = "joint_position_arm_left"
+elif DATASET_MODE == "libero":
+    NEW_DATASET_DIR = "libero_object_wp/waypoint_filtered_rlds__libero/1.0.0"
+    WP_INDICES_PATH = "libero_object_wp/waypoint_indices.json"
+    SRC_DATASET_DIR = "/workspace/data/libero_dataset/libero_object_no_noops/1.0.0"
+    EXPECTED_EPISODES = 454
+    IMAGE_KEYS = ["image", "wrist_image"]
+    IMAGE_SHAPE = (256, 256, 3)
+    OBS_SHAPE_CHECKS = {
+        "state": (8,),
+        "joint_state": (7,),
+    }
+    ACTION_SHAPE = (7,)
+    CROSS_VAL_OBS_KEY = "state"
+else:
+    raise ValueError(f"Unknown DATASET_MODE: {DATASET_MODE!r}. Use 'r1_lite' or 'libero'.")
 
 passed = 0
 failed = 0
@@ -116,10 +154,13 @@ else:
 
 # Compression stats
 ratios = [ep["original_steps"] / max(ep["waypoint_steps"], 1) for ep in wp_episodes]
-print(f"  Compression ratio: min={min(ratios):.1f}x, "
-      f"max={max(ratios):.1f}x, "
-      f"mean={np.mean(ratios):.1f}x, "
-      f"median={np.median(ratios):.1f}x")
+if ratios:
+    print(f"  Compression ratio: min={min(ratios):.1f}x, "
+          f"max={max(ratios):.1f}x, "
+          f"mean={np.mean(ratios):.1f}x, "
+          f"median={np.median(ratios):.1f}x")
+else:
+    print("  Compression ratio: N/A (no episodes in waypoint_indices)")
 
 
 # ============================================================
@@ -149,7 +190,8 @@ for ep_idx, episode in enumerate(dataset):
         step_counts.append(n)
         ep_count += 1
 
-        if ep_idx % 2000 == 0:
+        progress_interval = 2000 if EXPECTED_EPISODES > 2000 else max(1, EXPECTED_EPISODES // 10)
+        if ep_idx % progress_interval == 0:
             print(f"  Iterating... ep {ep_idx} ({n} steps)", flush=True)
     except Exception as e:
         errors.append((ep_idx, str(e)))
@@ -181,7 +223,9 @@ print("Level 4: Sampled content validation")
 print(f"{'='*60}")
 
 dataset = builder.as_dataset(split="train")
-sample_indices = list(range(0, EXPECTED_EPISODES, 2000))
+# Adjust sampling stride based on dataset size
+sample_stride = 2000 if EXPECTED_EPISODES > 2000 else max(1, EXPECTED_EPISODES // 5)
+sample_indices = list(range(0, EXPECTED_EPISODES, sample_stride))
 level4_ok = True
 
 for ep_idx, episode in enumerate(dataset):
@@ -203,9 +247,9 @@ for ep_idx, episode in enumerate(dataset):
         level4_ok = False
 
     # Image checks
-    for img_key in ["image_camera_head", "image_camera_wrist_left", "image_camera_wrist_right"]:
+    for img_key in IMAGE_KEYS:
         img = obs[img_key].numpy()
-        if img.shape != (224, 224, 3):
+        if img.shape != IMAGE_SHAPE:
             check(f"Ep {ep_idx}: {img_key} shape", False, f"got {img.shape}")
             level4_ok = False
         if img.dtype != np.uint8:
@@ -213,26 +257,16 @@ for ep_idx, episode in enumerate(dataset):
             level4_ok = False
 
     # Tensor shape checks
-    shape_checks = {
-        "joint_position_arm_left": (6,),
-        "joint_position_arm_right": (6,),
-        "joint_position_torso": (4,),
-        "joint_velocity_arm_left": (6,),
-        "joint_velocity_arm_right": (6,),
-        "gripper_state_left": (1,),
-        "gripper_state_right": (1,),
-        "base_velocity": (3,),
-        "last_action": (26,),
-    }
-    for key, expected_shape in shape_checks.items():
+    for key, expected_shape in OBS_SHAPE_CHECKS.items():
         actual_shape = tuple(obs[key].shape)
         if actual_shape != expected_shape:
             check(f"Ep {ep_idx}: obs/{key} shape", False,
                   f"got {actual_shape}, expected {expected_shape}")
             level4_ok = False
 
-    if tuple(first["action"].shape) != (26,):
-        check(f"Ep {ep_idx}: action shape", False)
+    if tuple(first["action"].shape) != ACTION_SHAPE:
+        check(f"Ep {ep_idx}: action shape", False,
+              f"got {tuple(first['action'].shape)}, expected {ACTION_SHAPE}")
         level4_ok = False
 
     # NaN/Inf checks
@@ -241,7 +275,7 @@ for ep_idx, episode in enumerate(dataset):
         check(f"Ep {ep_idx}: action NaN/Inf", False)
         level4_ok = False
 
-    print(f"  Ep {ep_idx}: {n} steps, img_mean={obs['image_camera_head'].numpy().mean():.1f}, OK")
+    print(f"  Ep {ep_idx}: {n} steps, img_mean={obs[IMAGE_KEYS[0]].numpy().mean():.1f}, OK")
 
     if ep_idx >= sample_indices[-1]:
         break
@@ -256,11 +290,21 @@ print(f"\n{'='*60}")
 print("Level 5: Cross-validation against source dataset")
 print(f"{'='*60}")
 
-cross_check_indices = [0, 5000, 10000]
+# Pick cross-check indices appropriate for dataset size
+if EXPECTED_EPISODES > 1000:
+    cross_check_indices = [0, 5000, 10000]
+else:
+    # For smaller datasets (e.g. LIBERO ~454 eps), pick start/mid/end
+    cross_check_indices = [0, EXPECTED_EPISODES // 2, EXPECTED_EPISODES - 1]
+
 src_builder = tfds.builder_from_directory(SRC_DATASET_DIR)
 
 level5_ok = True
 for target_idx in cross_check_indices:
+    if target_idx >= len(wp_data["episodes"]):
+        print(f"  Skipping ep {target_idx}: out of range")
+        continue
+
     print(f"  Checking episode {target_idx}...", flush=True)
 
     # Load from new dataset
@@ -282,17 +326,17 @@ for target_idx in cross_check_indices:
     src_steps = list(src_ep["steps"])
 
     # Get waypoint indices
-    wp_indices = wp_data["episodes"][target_idx]["waypoint_indices"]
+    wp_indices_list = wp_data["episodes"][target_idx]["waypoint_indices"]
 
-    if len(new_steps) != len(wp_indices):
+    if len(new_steps) != len(wp_indices_list):
         check(f"Ep {target_idx}: step count matches wp_indices",
-              False, f"{len(new_steps)} vs {len(wp_indices)}")
+              False, f"{len(new_steps)} vs {len(wp_indices_list)}")
         level5_ok = False
         continue
 
     # Compare action values at waypoint positions
     mismatches = 0
-    for i, orig_i in enumerate(wp_indices):
+    for i, orig_i in enumerate(wp_indices_list):
         src_action = src_steps[orig_i]["action"].numpy()
         new_action = new_steps[i]["action"].numpy()
         if not np.allclose(src_action, new_action, atol=1e-5):
@@ -301,10 +345,10 @@ for target_idx in cross_check_indices:
                 diff = np.abs(src_action - new_action).max()
                 print(f"    Mismatch at step {i} (orig {orig_i}): max_diff={diff}")
 
-        # Also compare a joint position
-        src_jp = src_steps[orig_i]["observation"]["joint_position_arm_left"].numpy()
-        new_jp = new_steps[i]["observation"]["joint_position_arm_left"].numpy()
-        if not np.allclose(src_jp, new_jp, atol=1e-5):
+        # Also compare an observation key
+        src_obs_val = src_steps[orig_i]["observation"][CROSS_VAL_OBS_KEY].numpy()
+        new_obs_val = new_steps[i]["observation"][CROSS_VAL_OBS_KEY].numpy()
+        if not np.allclose(src_obs_val, new_obs_val, atol=1e-5):
             mismatches += 1
 
     if mismatches > 0:
@@ -312,7 +356,7 @@ for target_idx in cross_check_indices:
         check(f"Ep {target_idx}: data matches source", False,
               f"{mismatches} mismatches")
     else:
-        print(f"    Ep {target_idx}: all {len(wp_indices)} waypoint steps match source")
+        print(f"    Ep {target_idx}: all {len(wp_indices_list)} waypoint steps match source")
 
 check("Cross-validation against source", level5_ok)
 

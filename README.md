@@ -35,6 +35,7 @@ conda activate awe_venv
 4. Install packages
 ```bash
 pip install -e .
+pip install tensorflow tensorflow-datasets
 ```
 
 ## RoboMimic
