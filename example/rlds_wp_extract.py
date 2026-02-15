@@ -297,11 +297,8 @@ class WaypointFilteredRLDS_Libero(tfds.core.GeneratorBasedBuilder):
             features=tfds.features.FeaturesDict({
                 'steps': tfds.features.Dataset({
                     'observation': tfds.features.FeaturesDict({
-                        # EEF state (6D pose + 2D gripper)
                         'state':       tfds.features.Tensor(shape=(8,), dtype=tf.float32),
-                        # Joint angles (7 DOF)
                         'joint_state': tfds.features.Tensor(shape=(7,), dtype=tf.float32),
-                        # RGB images
                         'image':       tfds.features.Image(shape=(224, 224, 3), dtype=tf.uint8, encoding_format='jpeg'),
                         'wrist_image': tfds.features.Image(shape=(224, 224, 3), dtype=tf.uint8, encoding_format='jpeg'),
                     }),
@@ -312,6 +309,10 @@ class WaypointFilteredRLDS_Libero(tfds.core.GeneratorBasedBuilder):
                     'language_instruction':  tfds.features.Text(),
                     'discount':             tfds.features.Scalar(dtype=tf.float32),
                     'reward':               tfds.features.Scalar(dtype=tf.float32),
+                    # Waypoint metadata
+                    'waypoint_duration':    tfds.features.Scalar(dtype=tf.int32),
+                    'is_waypoint_end':      tfds.features.Scalar(dtype=tf.bool),
+                    'original_step_index':  tfds.features.Scalar(dtype=tf.int32),
                 }),
                 'episode_metadata': tfds.features.FeaturesDict({
                     'file_path': tfds.features.Text(),
@@ -378,6 +379,12 @@ class WaypointFilteredRLDS_Libero(tfds.core.GeneratorBasedBuilder):
             for new_i, orig_i in enumerate(wp_indices):
                 step = steps[orig_i]
                 obs = step["observation"]
+                # Compute waypoint metadata
+                if new_i < n_wp - 1:
+                    duration = wp_indices[new_i + 1] - wp_indices[new_i]
+                else:
+                    duration = 0  # last waypoint has no next waypoint
+                is_wp_end = bool(new_i == n_wp - 1)
                 step_dict = {
                     # "observation": {
                     #     "state":       obs["state"].numpy(),
@@ -398,6 +405,10 @@ class WaypointFilteredRLDS_Libero(tfds.core.GeneratorBasedBuilder):
                     "language_instruction": step["language_instruction"].numpy().decode("utf-8"),
                     "discount":            float(step["discount"].numpy()),
                     "reward":              float(step["reward"].numpy()),
+                    # Waypoint metadata
+                    "waypoint_duration":   int(duration),
+                    "is_waypoint_end":     is_wp_end,
+                    "original_step_index": int(orig_i),
                 }
                 ep_steps.append(step_dict)
 
