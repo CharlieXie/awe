@@ -51,9 +51,9 @@ if DATASET_MODE == "r1_lite":
     ACTION_SHAPE = (26,)
     CROSS_VAL_OBS_KEY = "joint_position_arm_left"
 elif DATASET_MODE == "libero":
-    NEW_DATASET_DIR = "libero_object_wp/waypoint_filtered_rlds__libero/1.0.0"
-    WP_INDICES_PATH = "libero_object_wp/waypoint_indices.json"
-    SRC_DATASET_DIR = "/workspace/data/libero_dataset/libero_object_no_noops/1.0.0"
+    NEW_DATASET_DIR = "libero_object_wp_001/waypoint_filtered_rlds__libero/1.0.0"
+    WP_INDICES_PATH = "libero_object_wp_001/waypoint_indices.json"
+    SRC_DATASET_DIR = r"C:\Users\chuanlia\Documents\learning_space\ntu\projects\check_rlds_data\libero_object_no_noops\libero_object_no_noops\1.0.0"
     EXPECTED_EPISODES = 454
     IMAGE_KEYS = ["image", "wrist_image"]
     IMAGE_SHAPE = (256, 256, 3)

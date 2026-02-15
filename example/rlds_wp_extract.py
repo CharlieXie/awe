@@ -129,9 +129,9 @@ if DATASET_MODE == "r1_lite":
     GRIPPER_INDICES = [6, 13]   # left_idx, right_idx in action (range 0-100)
     GRIPPER_ATOL = 1.0
 elif DATASET_MODE == "libero":
-    ERR_THRESHOLD = 0.008     # EEF pose error threshold (tune as needed)
-    SRC_DATA_DIR = r"/workspace/data/libero_dataset/libero_object_no_noops/1.0.0"
-    DST_DATA_DIR = r"libero_object_wp"
+    ERR_THRESHOLD = 0.01     # EEF pose error threshold (tune as needed)
+    SRC_DATA_DIR = r"C:\Users\chuanlia\Documents\learning_space\ntu\projects\check_rlds_data\libero_object_no_noops\libero_object_no_noops\1.0.0"
+    DST_DATA_DIR = r"libero_object_wp_001"
     GRIPPER_INDICES = [6]       # single gripper in action (binary {-1, 1})
     GRIPPER_ATOL = 1.0          # diff on transition = 2.0, always > 1.0
 else:
@@ -302,8 +302,8 @@ class WaypointFilteredRLDS_Libero(tfds.core.GeneratorBasedBuilder):
                         # Joint angles (7 DOF)
                         'joint_state': tfds.features.Tensor(shape=(7,), dtype=tf.float32),
                         # RGB images
-                        'image':       tfds.features.Image(shape=(256, 256, 3), dtype=tf.uint8, encoding_format='jpeg'),
-                        'wrist_image': tfds.features.Image(shape=(256, 256, 3), dtype=tf.uint8, encoding_format='jpeg'),
+                        'image':       tfds.features.Image(shape=(224, 224, 3), dtype=tf.uint8, encoding_format='jpeg'),
+                        'wrist_image': tfds.features.Image(shape=(224, 224, 3), dtype=tf.uint8, encoding_format='jpeg'),
                     }),
                     'action':               tfds.features.Tensor(shape=(7,), dtype=tf.float32),
                     'is_first':             tfds.features.Scalar(dtype=tf.bool),
@@ -379,11 +379,17 @@ class WaypointFilteredRLDS_Libero(tfds.core.GeneratorBasedBuilder):
                 step = steps[orig_i]
                 obs = step["observation"]
                 step_dict = {
+                    # "observation": {
+                    #     "state":       obs["state"].numpy(),
+                    #     "joint_state": obs["joint_state"].numpy(),
+                    #     "image":       obs["image"].numpy(),
+                    #     "wrist_image": obs["wrist_image"].numpy(),
+                    # },
                     "observation": {
                         "state":       obs["state"].numpy(),
                         "joint_state": obs["joint_state"].numpy(),
-                        "image":       obs["image"].numpy(),
-                        "wrist_image": obs["wrist_image"].numpy(),
+                        "image":       tf.cast(tf.image.resize(obs["image"], [224, 224]), tf.uint8).numpy(),
+                        "wrist_image": tf.cast(tf.image.resize(obs["wrist_image"], [224, 224]), tf.uint8).numpy(),
                     },
                     "action":              step["action"].numpy(),
                     "is_first":            bool(new_i == 0),
