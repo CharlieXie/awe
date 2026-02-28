@@ -158,7 +158,7 @@ class WaypointFilteredRLDS_R1Lite(tfds.core.GeneratorBasedBuilder):
     def _info(self) -> tfds.core.DatasetInfo:
         return tfds.core.DatasetInfo(
             builder=self,
-            disable_shuffling=True,
+            # disable_shuffling=True,
             features=tfds.features.FeaturesDict({
                 'steps': tfds.features.Dataset({
                     'observation': tfds.features.FeaturesDict({
